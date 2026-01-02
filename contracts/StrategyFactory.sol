@@ -1,3 +1,4 @@
+// contracts/StrategyFactory.sol
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
@@ -24,23 +25,22 @@ contract StrategyFactory {
     }
 
     function createStrategy(
+        address asset, // <--- Novo argumento: qual token esse cofre usa?
         uint256 performanceFeeBps
     ) external returns (address) {
         address clone = Clones.clone(implementation);
-
-        StrategyVault(payable(clone)).initialize(
+        StrategyVault(clone).initialize(
+            asset, // Passa o token (USDC)
             oracle,
             msg.sender,
             performanceFeeBps
         );
-
         strategies.push(
             StrategyInfo({
                 vault: clone,
                 strategist: msg.sender
             })
         );
-
         emit StrategyCreated(clone, msg.sender);
         return clone;
     }

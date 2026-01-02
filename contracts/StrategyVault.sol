@@ -1,19 +1,22 @@
+// contracts/StrategyVault.sol
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/IOracle.sol";
 
 contract StrategyVault is
     Initializable,
-    ERC20,
-    ReentrancyGuard,
-    Ownable
+    ERC20Upgradeable,
+    ReentrancyGuardUpgradeable,
+    OwnableUpgradeable
 {
     IOracle public oracle;
+    IERC20 public asset; // O Token (USDC)
     address public strategist;
 
     uint256 public totalAssets;
@@ -32,38 +35,42 @@ contract StrategyVault is
     Bet[] public bets;
     mapping(address => uint256) public depositTimestamp;
 
-    /// @notice Initializer instead of constructor (required for clones)
     function initialize(
+        address _asset, // USDC Address
         address _oracle,
         address _strategist,
         uint256 _performanceFeeBps
     ) external initializer {
+        __ERC20_init("SharedBet Token", "SBT");
+        __ReentrancyGuard_init();
+        __Ownable_init(_strategist);
+
+        require(_asset != address(0), "Invalid asset");
         require(_oracle != address(0), "Invalid oracle");
         require(_strategist != address(0), "Invalid strategist");
         require(_performanceFeeBps <= 2_000, "Fee too high");
 
+        asset = IERC20(_asset);
         oracle = IOracle(_oracle);
         strategist = _strategist;
         performanceFeeBps = _performanceFeeBps;
-
-        _transferOwnership(_strategist);
     }
 
-    // ------------------------
-    // Deposits / Withdrawals
-    // ------------------------
-
-    function deposit() external payable nonReentrant {
-        require(msg.value > 0, "Zero deposit");
+    // Agora o depósito exige aprovação prévia do USDC e valor como argumento
+    function deposit(uint256 amount) external nonReentrant {
+        require(amount > 0, "Zero deposit");
+        
+        // Puxa o USDC do usuário para o cofre
+        asset.transferFrom(msg.sender, address(this), amount);
 
         uint256 shares;
         if (totalSupply() == 0) {
-            shares = msg.value;
+            shares = amount;
         } else {
-            shares = (msg.value * totalSupply()) / totalAssets;
+            shares = (amount * totalSupply()) / totalAssets;
         }
 
-        totalAssets += msg.value;
+        totalAssets += amount;
         depositTimestamp[msg.sender] = block.timestamp;
 
         _mint(msg.sender, shares);
@@ -74,22 +81,16 @@ contract StrategyVault is
             block.timestamp >= depositTimestamp[msg.sender] + 1 days,
             "Funds locked"
         );
-
         uint256 amount = (shares * totalAssets) / totalSupply();
-        uint256 available = address(this).balance - lockedFunds;
-
+        uint256 available = asset.balanceOf(address(this)) - lockedFunds;
         require(amount <= available, "Funds locked in bets");
 
         totalAssets -= amount;
         _burn(msg.sender, shares);
 
-        (bool sent, ) = payable(msg.sender).call{value: amount}("");
-        require(sent, "ETH transfer failed");
+        // Envia USDC de volta
+        asset.transfer(msg.sender, amount);
     }
-
-    // ------------------------
-    // Betting Logic
-    // ------------------------
 
     function placeBet(
         uint256 matchId,
@@ -97,7 +98,7 @@ contract StrategyVault is
         uint256 amount
     ) external onlyOwner {
         require(
-            amount <= address(this).balance - lockedFunds,
+            amount <= asset.balanceOf(address(this)) - lockedFunds,
             "Insufficient free funds"
         );
 
@@ -122,19 +123,18 @@ contract StrategyVault is
 
         bet.settled = true;
         lockedFunds -= bet.amount;
-
+        
         if (bet.predictedOutcome == outcome) {
-            uint256 profit = bet.amount;
+            uint256 profit = bet.amount; // Simplificação: lucro = aposta (odds 2.0 fixas na lógica interna atual)
+            // Se o lucro viesse de fora, precisaria de transferFrom aqui. 
+            // Assumindo que o dinheiro 'apareceu' ou é contabilidade interna:
             totalAssets += profit;
 
             uint256 fee = (profit * performanceFeeBps) / BPS_DENOMINATOR;
             uint256 feeShares = (fee * totalSupply()) / totalAssets;
-
             _mint(strategist, feeShares);
         } else {
             totalAssets -= bet.amount;
         }
     }
-
-    receive() external payable {}
 }
